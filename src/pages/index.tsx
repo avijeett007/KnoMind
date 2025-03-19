@@ -80,7 +80,7 @@ const ConnectionWrapper: FC<ConnectionWrapperProps> = ({ userProfile, onClose })
 
   const handleConnect = async (shouldConnect: boolean) => {
     if (shouldConnect) {
-      await connect("env");
+      await connect("env", userProfile);
     } else {
       await disconnect();
     }
@@ -305,7 +305,24 @@ export default function Home() {
     };
     
     window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
+    
+    // Listen for the custom event from the Hero section
+    const handleShowPlayground = (event: CustomEvent) => {
+      if (event.detail?.userProfile) {
+        // Show the playground modal from the header component
+        const headerButton = document.querySelector('.header-playground-button') as HTMLButtonElement;
+        if (headerButton) {
+          headerButton.click();
+        }
+      }
+    };
+    
+    window.addEventListener('showPlayground', handleShowPlayground as EventListener);
+    
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('showPlayground', handleShowPlayground as EventListener);
+    };
   }, []);
 
   const handleOnboardingComplete = (profile: UserProfile) => {

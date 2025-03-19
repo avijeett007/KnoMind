@@ -19,7 +19,7 @@ type ConnectionContextType = {
   token: string;
   shouldConnect: boolean;
   mode: ConnectionMode;
-  connect: (mode: ConnectionMode) => Promise<void>;
+  connect: (mode: ConnectionMode, metadata?: any) => Promise<void>;
   disconnect: () => Promise<void>;
 };
 
@@ -37,7 +37,7 @@ export const ConnectionProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   });
 
   const connect = useCallback(
-    async (mode: ConnectionMode) => {
+    async (mode: ConnectionMode, metadata?: any) => {
       let token = "";
       let url = "";
       try {
@@ -49,7 +49,19 @@ export const ConnectionProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             throw new Error("NEXT_PUBLIC_LIVEKIT_URL is not set");
           }
           url = process.env.NEXT_PUBLIC_LIVEKIT_URL;
-          const response = await fetch("/api/token");
+          
+          // Use POST request with metadata if provided
+          const options: RequestInit = metadata ? {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              metadata
+            })
+          } : {};
+          
+          const response = await fetch("/api/token", options);
           if (!response.ok) {
             throw new Error("Failed to fetch token");
           }

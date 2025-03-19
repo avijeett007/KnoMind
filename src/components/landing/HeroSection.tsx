@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import Logo from '../Logo';
 import { useConnection } from '@/hooks/useConnection';
+import { LiveKitRoom, RoomAudioRenderer, StartAudio } from '@livekit/components-react';
+import Playground from '@/components/playground/Playground';
 
 // Define brand colors for consistency
 const brandColors = {
@@ -31,19 +33,57 @@ interface UserProfile {
 const HeroSection: React.FC<HeroSectionProps> = ({ onGetStarted }) => {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [showPlayground, setShowPlayground] = useState(false);
-  const { connect } = useConnection();
+  const { connect, disconnect } = useConnection();
   
-  // Check if user profile exists in local storage
-  useEffect(() => {
-    const savedProfile = localStorage.getItem('knomind_user_profile');
-    if (savedProfile) {
+  // Function to handle LiveKit connection
+  const handleConnect = async (shouldConnect: boolean) => {
+    if (shouldConnect) {
       try {
-        setUserProfile(JSON.parse(savedProfile));
-      } catch (e) {
-        console.error("Failed to parse saved profile", e);
+        // Connect to LiveKit with the token, passing userProfile as metadata
+        await connect('env', userProfile);
+      } catch (error) {
+        console.error('Error connecting to LiveKit:', error);
       }
+    } else if (disconnect) {
+      await disconnect();
     }
+  };
+  
+  // Check if user profile exists in local storage and listen for changes
+  useEffect(() => {
+    const checkUserProfile = () => {
+      const savedProfile = localStorage.getItem('knomind_user_profile');
+      if (savedProfile) {
+        try {
+          setUserProfile(JSON.parse(savedProfile));
+        } catch (e) {
+          console.error("Failed to parse saved profile", e);
+        }
+      }
+    };
+    
+    // Initial check
+    checkUserProfile();
+    
+    // Set up a storage event listener to detect changes
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'knomind_user_profile') {
+        checkUserProfile();
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    
+    // Also poll for changes every second (as a fallback)
+    const intervalId = setInterval(checkUserProfile, 1000);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      clearInterval(intervalId);
+    };
   }, []);
+
+
   return (
     <section className="relative min-h-screen overflow-hidden bg-gradient-to-b from-indigo-900 to-purple-900">
       {/* Background elements */}
@@ -143,29 +183,9 @@ const HeroSection: React.FC<HeroSectionProps> = ({ onGetStarted }) => {
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   className={`px-6 py-3 bg-gradient-to-r ${brandColors.gradient.primary} text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 flex items-center justify-center`}
-                  onClick={async () => {
-                    try {
-                      // Send user profile data to the token API
-                      const response = await fetch('/api/token', {
-                        method: 'POST',
-                        headers: {
-                          'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                          metadata: userProfile
-                        })
-                      });
-                      
-                      if (!response.ok) {
-                        throw new Error('Failed to get token');
-                      }
-                      
-                      // Connect to LiveKit with the token
-                      await connect('env');
-                      setShowPlayground(true);
-                    } catch (error) {
-                      console.error('Error connecting to LiveKit:', error);
-                    }
+                  onClick={() => {
+                    setShowPlayground(true);
+                    handleConnect(true);
                   }}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -325,6 +345,44 @@ const HeroSection: React.FC<HeroSectionProps> = ({ onGetStarted }) => {
           </svg>
         </motion.div>
       </motion.div>
+      
+      {/* Playground Modal */}
+      <AnimatePresence>
+        {showPlayground && userProfile && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 backdrop-filter backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="bg-transparent w-full max-w-5xl h-[90vh] overflow-hidden rounded-2xl shadow-2xl"
+            >
+              <LiveKitRoom
+                serverUrl={useConnection().wsUrl}
+                token={useConnection().token}
+                connect={true}
+                className="w-full h-full"
+              >
+                <Playground
+                  themeColors={["indigo", "purple", "blue", "teal", "green", "amber", "rose", "pink"]}
+                  onConnect={handleConnect}
+                  onClose={() => {
+                    setShowPlayground(false);
+                  }}
+                  userProfile={userProfile}
+                />
+                <RoomAudioRenderer />
+                <StartAudio label="Click to enable audio playback" />
+              </LiveKitRoom>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </section>
   );
 };
