@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import Logo from '../Logo';
+import { useConnection } from '@/hooks/useConnection';
 
 // Define brand colors for consistency
 const brandColors = {
@@ -22,7 +23,27 @@ interface HeroSectionProps {
   onGetStarted: () => void;
 }
 
+interface UserProfile {
+  name: string;
+  goal: string;
+}
+
 const HeroSection: React.FC<HeroSectionProps> = ({ onGetStarted }) => {
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [showPlayground, setShowPlayground] = useState(false);
+  const { connect } = useConnection();
+  
+  // Check if user profile exists in local storage
+  useEffect(() => {
+    const savedProfile = localStorage.getItem('knomind_user_profile');
+    if (savedProfile) {
+      try {
+        setUserProfile(JSON.parse(savedProfile));
+      } catch (e) {
+        console.error("Failed to parse saved profile", e);
+      }
+    }
+  }, []);
   return (
     <section className="relative min-h-screen overflow-hidden bg-gradient-to-b from-indigo-900 to-purple-900">
       {/* Background elements */}
@@ -117,18 +138,55 @@ const HeroSection: React.FC<HeroSectionProps> = ({ onGetStarted }) => {
               transition={{ duration: 0.6, delay: 0.6 }}
               className="flex flex-col sm:flex-row gap-4"
             >
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                className={`px-6 py-3 bg-gradient-to-r ${brandColors.gradient.primary} text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 flex items-center justify-center`}
-                onClick={onGetStarted}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Get Started
-              </motion.button>
+              {userProfile ? (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  className={`px-6 py-3 bg-gradient-to-r ${brandColors.gradient.primary} text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 flex items-center justify-center`}
+                  onClick={async () => {
+                    try {
+                      // Send user profile data to the token API
+                      const response = await fetch('/api/token', {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                          metadata: userProfile
+                        })
+                      });
+                      
+                      if (!response.ok) {
+                        throw new Error('Failed to get token');
+                      }
+                      
+                      // Connect to LiveKit with the token
+                      await connect('env');
+                      setShowPlayground(true);
+                    } catch (error) {
+                      console.error('Error connecting to LiveKit:', error);
+                    }
+                  }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                  </svg>
+                  Talk to Coach
+                </motion.button>
+              ) : (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  className={`px-6 py-3 bg-gradient-to-r ${brandColors.gradient.primary} text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-indigo-500/30 transition-all duration-300 flex items-center justify-center`}
+                  onClick={onGetStarted}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Get Started
+                </motion.button>
+              )}
               
               <motion.button
                 whileHover={{ scale: 1.05 }}

@@ -25,8 +25,22 @@ export default async function handleToken(
       return;
     }
 
-    const roomName = `room-${generateRandomAlphanumeric(4)}-${generateRandomAlphanumeric(4)}`;
-    const identity = `identity-${generateRandomAlphanumeric(4)}`
+    // Check if the request method is POST
+    if (req.method !== 'POST' && req.method !== 'GET') {
+      res.setHeader('Allow', ['POST', 'GET']);
+      res.status(405).end(`Method ${req.method} Not Allowed`);
+      return;
+    }
+
+    // Extract metadata from request body for POST requests
+    let metadata = {};
+    if (req.method === 'POST' && req.body) {
+      metadata = req.body.metadata || {};
+    }
+
+    // Ensure roomName ends with knomind
+    const roomName = `room-${generateRandomAlphanumeric(4)}-${generateRandomAlphanumeric(4)}-knomind`;
+    const identity = `identity-${generateRandomAlphanumeric(4)}`;
 
     const grant: VideoGrant = {
       room: roomName,
@@ -36,10 +50,19 @@ export default async function handleToken(
       canSubscribe: true,
     };
 
-    const token = await createToken({ identity }, grant);
+    // Ensure metadata is properly stringified
+    const metadataString = JSON.stringify(metadata);
+
+    // Create token with metadata
+    const token = await createToken({ 
+      identity,
+      metadata: metadataString
+    }, grant);
+
     const result: TokenResult = {
       identity,
       accessToken: token,
+      roomName, // Include roomName in the response
     };
 
     res.status(200).json(result);
