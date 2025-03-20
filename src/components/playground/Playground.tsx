@@ -1,15 +1,9 @@
-import { FC, ReactNode, ReactElement, useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { FC, ReactNode, useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { AgentOnlyTranscription } from "@/components/transcription/AgentOnlyTranscription";
 import { LoadingSVG } from "@/components/button/LoadingSVG";
-import { ChatMessageType } from "@/components/chat/ChatTile";
 import { ConfigurationPanelItem } from "@/components/config/ConfigurationPanelItem";
 import { NameValueRow } from "@/components/config/NameValueRow";
-import {
-  PlaygroundTab,
-  PlaygroundTabbedTile,
-  PlaygroundTile,
-} from "@/components/playground/PlaygroundTile";
 import { useConfig } from "@/hooks/useConfig";
-import { TranscriptionTile } from "@/transcriptions/TranscriptionTile";
 import {
   BarVisualizer,
   VideoTrack,
@@ -25,8 +19,8 @@ import {
 } from "@livekit/components-react";
 import { ConnectionState, LocalParticipant, Track, DataPacket_Kind, Room, RoomEvent, ParticipantEvent } from "livekit-client";
 import Logo from "@/components/Logo";
-import { motion } from "framer-motion";
-import { Mic, Loader2, Send } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Mic, MicOff, Keyboard, X, Send, Camera, CameraOff, MessageCircle, Calendar, Settings, Video } from "lucide-react";
 
 export interface PlaygroundProps {
   logo?: ReactNode;
@@ -55,10 +49,15 @@ interface TranscriptMessage {
   timestamp: Date;
 }
 
-// Extended PlaygroundTab interface to include icon
-interface CustomPlaygroundTab extends PlaygroundTab {
-  icon?: ReactNode;
+interface ChatMessageType {
+  name: string;
+  message: string;
+  isSelf: boolean;
+  timestamp: number;
 }
+
+// Tab types for the playground interface
+type TabType = 'video' | 'chat' | 'settings';
 
 const Playground: FC<PlaygroundProps> = ({
   logo,
@@ -75,21 +74,70 @@ const Playground: FC<PlaygroundProps> = ({
   const room = roomInfo.room;
   const [transcripts, setTranscripts] = useState<ChatMessageType[]>([]);
   const [inputMessage, setInputMessage] = useState("");
-  const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const [hasPermissions, setHasPermissions] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [micPermissionGranted, setMicPermissionGranted] = useState(false);
-  const [isPushToTalk, setIsPushToTalk] = useState(true);
-  const [isActive, setIsActive] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isPushToTalk, setIsPushToTalk] = useState(false);
+  const [isActive, setIsActive] = useState(true);
+  const [isSpeaking, setIsSpeaking] = useState(true);
   const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
-  const [animationPosition, setAnimationPosition] = useState({ x: 0, y: 0 });
   const [isAgentPresent, setIsAgentPresent] = useState(false);
-
+  const [showTextInput, setShowTextInput] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabType>('chat');
+  const [showCamera, setShowCamera] = useState(false);
+  
   const { localParticipant } = useLocalParticipant();
   const participantAttributes = useParticipantAttributes({ participant: localParticipant });
   const connectionState = useConnectionState();
   const isConnected = connectionState === ConnectionState.Connected;
+  
+  // Voice assistant integration
+  const voiceAssistantData = useVoiceAssistant();
+  const { state: voiceAssistantState, audioTrack, agentTranscriptions } = voiceAssistantData;
+  
+  // Function to handle sending text messages
+  const handleSendMessage = () => {
+    if (inputMessage.trim() === '') return;
+    
+    console.log('Sending text message:', inputMessage);
+    
+    // Add message to transcripts
+    setTranscripts(prev => [
+      ...prev,
+      {
+        name: "You",
+        message: inputMessage,
+        isSelf: true,
+        timestamp: Date.now()
+      }
+    ]);
+    
+    // Send message to room
+    if (room) {
+      // Include user profile metadata in the message
+      const data = {
+        type: "message",
+        role: "user",
+        content: inputMessage,
+        // Make sure we're sending the user profile metadata
+        metadata: userProfile || {},
+        // Add name and goal directly in the message as well for compatibility
+        name: userProfile?.name || '',
+        goal: userProfile?.goal || '',
+        // Add timestamp for message ordering
+        timestamp: Date.now()
+      };
+      
+      console.log('Publishing data to room with user profile:', data);
+      room.localParticipant.publishData(
+        new TextEncoder().encode(JSON.stringify(data)),
+        DataPacket_Kind.RELIABLE
+      );
+    }
+    
+    // Clear input field
+    setInputMessage('');
+    setShowTextInput(false);
+  };
 
   // Subscribe to tracks
   const tracks = useTracks([
@@ -119,21 +167,22 @@ const Playground: FC<PlaygroundProps> = ({
     );
   }, [tracks, localParticipant]);
 
-  // Voice Assistant integration
-  const { state, audioTrack, agentTranscriptions } = useVoiceAssistant();
+  // Voice Assistant integration - speechCallbackRef for handling transcriptions
   const speechCallbackRef = useRef<((data: any) => void) | null>(null);
 
   // Watch for transcription changes
   useEffect(() => {
+    const { agentTranscriptions } = voiceAssistantData;
     if (speechCallbackRef.current && agentTranscriptions && agentTranscriptions.length > 0) {
       const latestTranscription = agentTranscriptions[agentTranscriptions.length - 1];
       speechCallbackRef.current({
         text: latestTranscription.text
       });
     }
-  }, [agentTranscriptions]);
+  }, [voiceAssistantData]);
 
-  const voiceAssistant = useMemo(() => {
+  const getVoiceAssistant = useCallback(() => {
+    const { state, audioTrack, agentTranscriptions } = voiceAssistantData;
     if (!state) return null;
     return {
       state,
@@ -160,21 +209,24 @@ const Playground: FC<PlaygroundProps> = ({
         }
       }
     };
-  }, [state, audioTrack, agentTranscriptions]);
+  }, [voiceAssistantData]);
 
-  // Initialize voice assistant state
+  // Initialize voice assistant state and cleanup on unmount
   useEffect(() => {
-    const state = voiceAssistant?.state;
-    if (state && typeof state === 'object' && 'stopRecording' in state) {
-      (state as { stopRecording: () => void }).stopRecording();
-    }
+    // On mount, ensure we have the voice assistant state properly initialized
+    const voiceAssistant = getVoiceAssistant();
+    console.log('Initializing voice assistant state:', voiceAssistant?.state);
+    
+    // On unmount, ensure we stop any recording
     return () => {
+      const voiceAssistant = getVoiceAssistant();
       const state = voiceAssistant?.state;
       if (state && typeof state === 'object' && 'stopRecording' in state) {
+        console.log('Stopping voice recording on unmount');
         (state as { stopRecording: () => void }).stopRecording();
       }
     };
-  }, [voiceAssistant]);
+  }, [getVoiceAssistant]);
 
   // Handle microphone permissions
   const handleMicrophonePermission = useCallback(async () => {
@@ -193,65 +245,104 @@ const Playground: FC<PlaygroundProps> = ({
     }
   }, []);
 
-  // Initialize microphone state
+  // Initialize microphone state - Request permissions but don't enable by default for push-to-talk mode
   useEffect(() => {
     const initMicrophoneState = async () => {
       try {
+        console.log('Initializing microphone state');
+        // First request microphone permissions
+        const permissionGranted = await handleMicrophonePermission();
+        if (!permissionGranted) {
+          console.log('Microphone permission not granted');
+          return;
+        }
+        
+        console.log('Microphone permission granted, setting up microphone');
         if (localParticipant) {
-          // Start with microphone on by default only if not in push-to-talk mode
-          if (!isPushToTalk) {
-            await localParticipant.setMicrophoneEnabled(true);
-            setIsActive(true);
-            setIsSpeaking(true);
+          // For push-to-talk mode, we start with the microphone off
+          console.log('Setting up push-to-talk mode, microphone initially disabled');
+          await localParticipant.setMicrophoneEnabled(false);
+          
+          // Initialize voice assistant but don't start it yet
+          const voiceAssistantInstance = getVoiceAssistant();
+          if (voiceAssistantInstance) {
+            console.log('Voice assistant initialized but not started');
+            
+            // Set up speech data handler if not already set
+            if (!speechCallbackRef.current) {
+              voiceAssistantInstance.on('speechData', (data: any) => {
+                console.log('Received speech data:', data);
+                // Process speech data if needed
+              });
+            }
           } else {
-            await localParticipant.setMicrophoneEnabled(false);
-            setIsActive(false);
-            setIsSpeaking(false);
+            console.log('Voice assistant not available');
           }
+          
+          // Set initial state to inactive for push-to-talk mode
+          setIsActive(false);
+          setIsSpeaking(false);
+          setIsPushToTalk(true); // Enable push-to-talk mode
+          console.log('Microphone initialized for push-to-talk mode');
         }
       } catch (error) {
         console.error('Error initializing microphone state:', error);
       }
     };
 
+    // Call initialization immediately when component mounts
+    console.log('Component mounted, initializing microphone for push-to-talk...');
     initMicrophoneState();
-  }, [localParticipant, isPushToTalk]);
+    
+    return () => {
+      // Cleanup if needed
+    };
+  }, [localParticipant, handleMicrophonePermission, getVoiceAssistant]);
 
-  // Enhanced background animation effect for speaking indicators
-  useEffect(() => {
-    const positionInterval = setInterval(() => {
-      setAnimationPosition({
-        x: Math.random() * 100 - 50,
-        y: Math.random() * 100 - 50,
-      });
-    }, 3000);
 
-    return () => clearInterval(positionInterval);
-  }, []);
 
-  // Watch for agent speaking state changes - ONLY for push-to-talk mode
-  useEffect(() => {
-    if (!isPushToTalk) return; // Only run this effect in push-to-talk mode
-
-    const handleAgentTrackStart = () => {
-      setIsAgentSpeaking(true);
-      if (isPushToTalk) {
-        if (localParticipant) {
-          localParticipant.setMicrophoneEnabled(false);
-        }
+  // This function is used to disable the microphone when the agent starts speaking
+  const disableMicrophone = useCallback(async () => {
+    try {
+      if (localParticipant) {
+        console.log('Auto-disabling microphone because agent is speaking');
+        await localParticipant.setMicrophoneEnabled(false);
+        const voiceAssistant = getVoiceAssistant();
         if (voiceAssistant) {
           voiceAssistant.stop();
         }
         setIsActive(false);
         setIsSpeaking(false);
       }
+    } catch (error) {
+      console.error('Error disabling microphone:', error);
+    }
+  }, [localParticipant, getVoiceAssistant]);
+
+  // Watch for agent speaking state changes
+  useEffect(() => {
+    const handleAgentTrackStart = () => {
+      console.log('Agent started speaking');
+      setIsAgentSpeaking(true);
+      
+      // Always disable the microphone when agent speaks
+      if (localParticipant && isActive) {
+        console.log('Disabling microphone because agent is speaking');
+        disableMicrophone().catch(err => {
+          console.error('Error disabling microphone:', err);
+        });
+      }
     };
 
     const handleAgentTrackStop = () => {
+      console.log('Agent stopped speaking');
       setIsAgentSpeaking(false);
+      // Don't automatically re-enable microphone when agent stops speaking
+      // User must click the button again to start speaking
     };
 
     if (agentTrack?.participant) {
+      console.log('Setting up agent track listeners');
       agentTrack.participant.on(ParticipantEvent.TrackPublished, handleAgentTrackStart);
       agentTrack.participant.on(ParticipantEvent.TrackUnpublished, handleAgentTrackStop);
 
@@ -260,56 +351,79 @@ const Playground: FC<PlaygroundProps> = ({
         agentTrack.participant.off(ParticipantEvent.TrackUnpublished, handleAgentTrackStop);
       };
     }
-  }, [agentTrack?.participant, localParticipant, voiceAssistant, isPushToTalk]);
+  }, [agentTrack?.participant, localParticipant, getVoiceAssistant, isActive, disableMicrophone]);
 
-  // Simple mute/unmute toggle - completely user controlled, no auto behavior
+
+
+  // Simple mute/unmute toggle function
   const toggleMicrophone = useCallback(async () => {
     if (!micPermissionGranted) {
       const granted = await handleMicrophonePermission();
       if (!granted) return;
     }
 
+    // Don't allow if agent is speaking
+    if (isAgentSpeaking) {
+      console.log('Agent is speaking, cannot toggle microphone');
+      return;
+    }
+
     try {
+      // Prevent rapid toggling by disabling the button temporarily
       const newState = !isActive;
+      console.log(`${newState ? 'Unmuting' : 'Muting'} microphone`);
+      
       if (localParticipant) {
+        // Set state first to provide immediate UI feedback
+        setIsActive(newState);
+        
+        // Then perform the actual microphone operation
         await localParticipant.setMicrophoneEnabled(newState);
-        // After successfully enabling/disabling the microphone, update state and voice assistant
+        
+        // Since we've successfully toggled the microphone (no error thrown), proceed
+        const voiceAssistant = getVoiceAssistant();
         if (voiceAssistant) {
           if (newState) {
+            console.log('Starting voice assistant');
             voiceAssistant.start();
+            setIsSpeaking(true);
           } else {
+            console.log('Stopping voice assistant');
             voiceAssistant.stop();
+            setIsSpeaking(false);
           }
+        } else {
+          setIsSpeaking(newState);
         }
-        setIsActive(newState);
-        setIsSpeaking(newState);
       }
     } catch (error) {
       console.error('Error toggling microphone:', error);
+      // Revert state if there was an error
+      setIsActive(isActive);
+      setIsSpeaking(isActive);
     }
-  }, [isActive, micPermissionGranted, handleMicrophonePermission, localParticipant, voiceAssistant]);
+  }, [micPermissionGranted, handleMicrophonePermission, localParticipant, getVoiceAssistant, isAgentSpeaking, isActive]);
+  
 
-  // Handle push-to-talk mode
-  const handlePushToTalk = useCallback(async () => {
-    if (!micPermissionGranted) {
-      const granted = await handleMicrophonePermission();
-      if (!granted) return;
-    }
 
-    try {
-      if (localParticipant) {
-        await localParticipant.setMicrophoneEnabled(true);
-        // Since we've successfully enabled the microphone (no error thrown), proceed
+  // Enable microphone by default when component mounts
+  useEffect(() => {
+    if (localParticipant && micPermissionGranted) {
+      console.log('Enabling microphone by default on component mount');
+      localParticipant.setMicrophoneEnabled(true).then(() => {
+        console.log('Microphone enabled by default');
+        const voiceAssistant = getVoiceAssistant();
         if (voiceAssistant) {
+          console.log('Starting voice assistant by default');
           voiceAssistant.start();
         }
         setIsActive(true);
         setIsSpeaking(true);
-      }
-    } catch (error) {
-      console.error('Error in push-to-talk:', error);
+      }).catch(err => {
+        console.error('Error enabling microphone by default:', err);
+      });
     }
-  }, [micPermissionGranted, handleMicrophonePermission, localParticipant, voiceAssistant]);
+  }, [localParticipant, micPermissionGranted, getVoiceAssistant]);
 
   // Track when agent joins/leaves
   useEffect(() => {
@@ -323,8 +437,17 @@ const Playground: FC<PlaygroundProps> = ({
         if (metadata?.role === 'agent' || 
             metadata?.userType === 'agent' || 
             participant.identity.includes('agent')) {
-          console.log('Agent detected - starting timer');
+          console.log('Agent detected - agent is present');
           setIsAgentPresent(true);
+          
+          // When agent joins, make sure we're ready to receive transcriptions
+          const voiceAssistant = getVoiceAssistant();
+          if (voiceAssistant) {
+            console.log('Setting up voice assistant for agent');
+            voiceAssistant.on('speechData', (data: any) => {
+              console.log('Received speech data:', data);
+            });
+          }
         }
       } catch (error) {
         console.error('Error parsing participant metadata:', error);
@@ -342,8 +465,6 @@ const Playground: FC<PlaygroundProps> = ({
           // Notify parent component that agent has left
           onAgentLeave?.(); 
           onClose();
-          // Refresh the page to reset state
-          window.location.reload();
         }
       } catch (error) {
         console.error('Error parsing participant metadata:', error);
@@ -373,22 +494,76 @@ const Playground: FC<PlaygroundProps> = ({
     const handleData = (payload: Uint8Array, participant?: any, kind?: DataPacket_Kind) => {
       try {
         const data = JSON.parse(new TextDecoder().decode(payload));
-        if (data.type === "transcript") {
-          setTranscripts(prev => [
-            ...prev,
-            {
-              name: data.role === "assistant" ? "Coach" : "You",
-              message: data.content || "",
-              isSelf: data.role !== "assistant",
+        console.log('Received data message:', data);
+        
+        // Log the participant identity for debugging
+        console.log('Message from participant:', participant?.identity);
+        
+        // IMPORTANT: When agent speaks, disable microphone (push-to-talk behavior)
+        if (participant && participant.identity !== room?.localParticipant.identity) {
+          // This is not from the local user, so it's likely from the agent
+          console.log('Message from agent detected, ensuring microphone is disabled');
+          // Simulate agent speaking to disable microphone
+          setIsAgentSpeaking(true);
+          if (localParticipant) {
+            localParticipant.setMicrophoneEnabled(false);
+            setIsActive(false);
+            setIsSpeaking(false);
+          }
+          
+          // After a short delay, reset agent speaking state
+          setTimeout(() => {
+            setIsAgentSpeaking(false);
+          }, 500);
+        }
+        
+        // Accept ALL messages from participants that are not the local user as agent messages
+        const isAgentMessage = participant && participant.identity !== room?.localParticipant.identity;
+        
+        console.log('Is this an agent message?', isAgentMessage);
+        
+        if (isAgentMessage) {
+          // Extract message content from various possible fields
+          const messageContent = data.content || data.text || data.message || "";
+          
+          // Only add non-empty messages to the transcript
+          if (messageContent.trim() !== "") {
+            const newMessage = {
+              name: "Coach",
+              message: messageContent,
+              isSelf: false,
               timestamp: Date.now()
-            }
-          ]);
+            };
+            console.log('Adding agent message to transcripts:', newMessage);
+            setTranscripts(prev => [...prev, newMessage]);
+          } else {
+            console.log('Received empty agent message, not adding to transcripts');
+          }
+        } else if (data.role === "user" || (participant && participant.identity === room?.localParticipant.identity)) {
+          // We already add user messages when sending, so don't add them again
+          console.log('Received user message, not adding to transcripts');
+        } else {
+          // If we can't determine the message type, log it and add it as an agent message
+          console.log('Received message with unknown type/role, treating as agent message:', data);
+          
+          const messageContent = data.content || data.text || data.message || JSON.stringify(data);
+          if (messageContent.trim() !== "") {
+            const newMessage = {
+              name: "Coach",
+              message: messageContent,
+              isSelf: false,
+              timestamp: Date.now()
+            };
+            console.log('Adding unknown message to transcripts as agent message:', newMessage);
+            setTranscripts(prev => [...prev, newMessage]);
+          }
         }
       } catch (e) {
         console.error("Failed to parse message", e);
       }
     };
 
+    console.log('Setting up data received listener');
     // Using the correct event name from RoomEvent enum
     room.on(RoomEvent.DataReceived, handleData);
     
@@ -400,11 +575,9 @@ const Playground: FC<PlaygroundProps> = ({
   const localVideoContent = useMemo(() => {
     if (!localVideoTrack) {
       return (
-        <div className="flex flex-col items-center justify-center gap-2 text-gray-300 text-center h-full w-full">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-          </svg>
-          <p>Camera is off</p>
+        <div className="flex flex-col items-center justify-center gap-2 text-gray-400 text-center h-full w-full bg-black">
+          <CameraOff className="h-10 w-10 text-gray-500" />
+          <p className="text-sm">Camera is off</p>
         </div>
       );
     }
@@ -413,243 +586,412 @@ const Playground: FC<PlaygroundProps> = ({
     const trackRef = localVideoTrack as TrackReference;
 
     return (
-      <VideoTrack
-        trackRef={trackRef}
-        className="h-full w-full object-cover rounded-xl"
-      />
+      <div className="h-full w-full">
+        <VideoTrack
+          trackRef={trackRef}
+          className="h-full w-full object-cover"
+        />
+      </div>
     );
   }, [localVideoTrack]);
 
+  // Create a modern UI with tabs for video, chat, and settings
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'video':
+        return (
+          <div className="flex-1 flex flex-col">
+            <div className="relative w-full h-full bg-gray-900 rounded-lg overflow-hidden">
+              {localVideoTrack ? (
+                <VideoTrack
+                  trackRef={localVideoTrack as TrackReference}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full">
+                  <Camera className="h-16 w-16 text-gray-600 mb-4" />
+                  <p className="text-gray-400">Camera is off</p>
+                  <button 
+                    onClick={() => {
+                      if (localParticipant) {
+                        localParticipant.setCameraEnabled(true);
+                      }
+                    }}
+                    className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                  >
+                    Turn on camera
+                  </button>
+                </div>
+              )}
+              <div className="absolute bottom-4 right-4 flex space-x-2">
+                <button
+                  onClick={() => {
+                    if (localParticipant) {
+                      const isEnabled = localParticipant.isCameraEnabled;
+                      localParticipant.setCameraEnabled(!isEnabled);
+                    }
+                  }}
+                  className="bg-gray-800 hover:bg-gray-700 text-white p-2 rounded-full transition-colors"
+                >
+                  {localParticipant?.isCameraEnabled ? 
+                    <Camera className="h-5 w-5" /> : 
+                    <CameraOff className="h-5 w-5" />}
+                </button>
+              </div>
+            </div>
+            
+            {voiceAssistantData.audioTrack && (
+              <div className="mt-4 p-4 bg-gray-800 rounded-lg">
+                <h3 className="text-white text-lg mb-2">Voice Assistant</h3>
+                <div className="[--lk-va-bar-width:20px] [--lk-va-bar-gap:10px] [--lk-fg:var(--indigo-500)]">
+                  <BarVisualizer
+                    state={voiceAssistantData.state}
+                    trackRef={voiceAssistantData.audioTrack}
+                    barCount={5}
+                    options={{ minHeight: 20 }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        );
+        
+      case 'settings':
+        return (
+          <div className="flex-1 overflow-y-auto p-4">
+            <div className="bg-gray-800 rounded-lg p-4 mb-4">
+              <h3 className="text-white text-lg mb-2">Connection Status</h3>
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-300">Room connection:</span>
+                  <span className={`px-2 py-1 rounded text-xs ${connectionState === ConnectionState.Connected ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'}`}>
+                    {connectionState}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-300">Agent presence:</span>
+                  <span className={`px-2 py-1 rounded text-xs ${isAgentPresent ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>
+                    {isAgentPresent ? 'PRESENT' : 'ABSENT'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            
+            <div className="bg-gray-800 rounded-lg p-4 mb-4">
+              <h3 className="text-white text-lg mb-2">Microphone Settings</h3>
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-300">Push-to-talk mode:</span>
+                  <button 
+                    onClick={() => setIsPushToTalk(!isPushToTalk)}
+                    className={`px-3 py-1 rounded-full ${isPushToTalk ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-300'}`}
+                  >
+                    {isPushToTalk ? 'Enabled' : 'Disabled'}
+                  </button>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-300">Microphone permission:</span>
+                  <span className={`px-2 py-1 rounded text-xs ${micPermissionGranted ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>
+                    {micPermissionGranted ? 'GRANTED' : 'DENIED'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            
+            {userProfile && (
+              <div className="bg-gray-800 rounded-lg p-4">
+                <h3 className="text-white text-lg mb-2">User Profile</h3>
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-300">Name:</span>
+                    <span className="text-white">{userProfile.name}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-300">Goal:</span>
+                    <span className="text-white">{userProfile.goal}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+        
+      case 'chat':
+      default:
+        return (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Transcripts/Chat area */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {/* Date indicator */}
+              {transcripts.length > 0 && (
+                <div className="flex justify-center my-4">
+                  <div className="bg-gray-800 rounded-full px-4 py-1 text-xs text-gray-300">
+                    <span className="flex items-center">
+                      <Calendar size={12} className="mr-1" />
+                      {new Date().toLocaleDateString('en-US', {weekday: 'long', month: 'short', day: 'numeric'})}
+                    </span>
+                  </div>
+                </div>
+              )}
+              
+              {agentTrack ? (
+                <div className="h-full w-full">
+                  <AgentOnlyTranscription
+                    agentAudioTrack={agentTrack}
+                    accentColor="indigo"
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-center">
+                  <div className="text-center">
+                    <MessageCircle className="h-12 w-12 text-gray-600 mx-auto mb-3" />
+                    <p className="text-gray-400 text-sm">
+                      No messages yet
+                    </p>
+                    <p className="text-gray-500 text-xs mt-1">
+                      Press the microphone button to start talking or use the keyboard to type
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+    }
+  };
+
   return (
-    <div className="flex flex-col h-full bg-gradient-to-br from-indigo-900/90 via-purple-900/90 to-indigo-800/90 p-4 rounded-2xl">
-      <div className="flex justify-between items-center mb-4">
+    <div className="fixed inset-0 bg-gray-900 z-50 flex flex-col max-w-md mx-auto h-full shadow-2xl">
+      {/* Header */}
+      <div className="bg-gray-800 p-3 flex items-center justify-between">
         <div className="flex items-center">
-          <Logo size={32} variant="light" />
-          <h1 className="text-xl font-bold text-white ml-2">KnoMind Coach</h1>
-          <div className="ml-3 px-2 py-0.5 bg-indigo-600/30 text-indigo-200 text-xs font-medium rounded-full border border-indigo-500/30">
-            BETA
+          <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center">
+            <span className="text-white text-xs">🎙️</span>
+          </div>
+          <div className="ml-3">
+            <h3 className="text-white font-medium text-base">KnoMind Coach</h3>
+            <p className="text-gray-400 text-xs flex items-center">
+              <span className={`inline-block w-2 h-2 rounded-full mr-1 ${isConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+              {isConnected ? 'Connected' : 'Disconnected'}
+            </p>
           </div>
         </div>
         <button
-          className="p-2 text-white/80 hover:text-white rounded-full transition-colors"
           onClick={onClose}
+          className="text-white p-2 hover:bg-gray-700 rounded-full transition-colors"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
+          <X className="h-5 w-5" />
         </button>
       </div>
-
-      <div className="flex flex-col md:flex-row gap-4 flex-1 overflow-hidden">
-        <div className="flex flex-col gap-4 w-full md:w-1/3">
-          <PlaygroundTile className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl overflow-hidden">
-            <div className="p-4 border-b border-white/10">
-              <h2 className="text-lg font-semibold text-white">Your Profile</h2>
+      
+      {/* Main content area */}
+      <div className="flex-1 flex flex-col overflow-hidden bg-gray-900">
+        {renderTabContent()}
+        
+        {/* Input area with centered push-to-talk button */}
+        <div className="border-t border-gray-800 p-4">
+          {showTextInput ? (
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={inputMessage}
+                onChange={(e) => setInputMessage(e.target.value)}
+                placeholder="Type your message..."
+                className="flex-1 bg-gray-800 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendMessage();
+                  }
+                }}
+                autoFocus
+              />
+              <button
+                onClick={handleSendMessage}
+                disabled={inputMessage.trim() === ''}
+                className="bg-indigo-600 text-white rounded-full p-2 hover:bg-indigo-700 transition-colors disabled:opacity-50"
+              >
+                <Send className="h-5 w-5" />
+              </button>
+              <button
+                onClick={() => setShowTextInput(false)}
+                className="bg-gray-700 text-white rounded-full p-2 hover:bg-gray-600 transition-colors"
+              >
+                <Mic className="h-5 w-5" />
+              </button>
             </div>
-            <div className="p-4">
-              <div className="flex items-center mb-4">
-                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xl font-bold">
-                  {userProfile?.name ? userProfile.name.charAt(0).toUpperCase() : 'U'}
+          ) : (
+            <div className="flex flex-col">
+              {/* Top row with tab buttons */}
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => setActiveTab('video')}
+                    className={`p-2 rounded-lg ${activeTab === 'video' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-300'} transition-colors`}
+                  >
+                    <Video className="h-5 w-5" />
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('chat')}
+                    className={`p-2 rounded-lg ${activeTab === 'chat' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-300'} transition-colors`}
+                  >
+                    <MessageCircle className="h-5 w-5" />
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('settings')}
+                    className={`p-2 rounded-lg ${activeTab === 'settings' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-300'} transition-colors`}
+                  >
+                    <Settings className="h-5 w-5" />
+                  </button>
                 </div>
-                <div className="ml-3">
-                  <h3 className="text-white font-medium">{userProfile?.name || 'User'}</h3>
-                  <p className="text-white/60 text-sm">{userProfile?.goal || 'Improving wellbeing'}</p>
+                
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => setShowTextInput(true)}
+                    className="p-2 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 transition-colors"
+                  >
+                    <Keyboard className="h-5 w-5" />
+                  </button>
+                  
+                  {/* Debug buttons */}
+                  <button
+                    onClick={() => {
+                      console.log('Clearing all transcripts');
+                      setTranscripts([]);
+                    }}
+                    className="p-2 rounded-lg bg-red-800 text-white transition-colors"
+                  >
+                    <span className="text-xs">Clear</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Add a test message to the transcript
+                      const testMessage = {
+                        name: "Coach",
+                        message: "This is a test message from the coach.",
+                        isSelf: false,
+                        timestamp: Date.now()
+                      };
+                      console.log('Adding test message to transcripts:', testMessage);
+                      setTranscripts(prev => [...prev, testMessage]);
+                    }}
+                    className="p-2 rounded-lg bg-gray-800 text-gray-300 transition-colors"
+                  >
+                    <span className="text-xs">Test</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Send a test message to the agent
+                      if (room) {
+                        const testData = {
+                          type: "message",
+                          role: "user",
+                          content: "Hello, this is a test message to the agent.",
+                          metadata: userProfile || {},
+                          name: userProfile?.name || 'Test User',
+                          goal: userProfile?.goal || 'Testing',
+                          timestamp: Date.now()
+                        };
+                        
+                        console.log('Sending test message to agent:', testData);
+                        room.localParticipant.publishData(
+                          new TextEncoder().encode(JSON.stringify(testData)),
+                          DataPacket_Kind.RELIABLE
+                        );
+                      }
+                    }}
+                    className="p-2 rounded-lg bg-gray-800 text-gray-300 transition-colors"
+                  >
+                    <span className="text-xs">Send</span>
+                  </button>
                 </div>
               </div>
               
-              <div className="space-y-2">
-                <NameValueRow
-                  name="Session"
-                  value={room?.name || "Not connected"}
-                  valueColor="white"
-                />
-                <NameValueRow
-                  name="Status"
-                  value={isConnected ? "Connected" : "Disconnected"}
-                  valueColor={isConnected ? "green-400" : "red-400"}
-                />
-              </div>
-            </div>
-          </PlaygroundTile>
-
-          <PlaygroundTile className="relative bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl overflow-hidden flex-1">
-            <div className="absolute inset-0 flex items-center justify-center flex-col p-6 text-center bg-black/30 backdrop-blur-[1px] z-10">
-              <div className="bg-indigo-600/80 text-white text-xs font-medium px-3 py-1 rounded-full mb-3">
-                COMING SOON
-              </div>
-              <h3 className="text-xl font-bold text-white mb-2">Session Insights</h3>
-              <p className="text-white/70">
-                Track your progress and get personalized insights from your coaching sessions.
-              </p>
-            </div>
-            
-            <div className="p-4 border-b border-white/10">
-              <h2 className="text-lg font-semibold text-white">Session Insights</h2>
-            </div>
-            <div className="p-4 opacity-30">
-              <div className="space-y-4">
-                <div className="h-4 bg-white/10 rounded-full w-full"></div>
-                <div className="h-4 bg-white/10 rounded-full w-3/4"></div>
-                <div className="h-4 bg-white/10 rounded-full w-1/2"></div>
-                <div className="h-20 bg-white/10 rounded-xl w-full"></div>
-              </div>
-            </div>
-          </PlaygroundTile>
-        </div>
-
-        <div className="flex flex-col gap-4 flex-1">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <PlaygroundTile className="relative bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl overflow-hidden aspect-video">
-              {localVideoContent}
-              <div className="absolute bottom-4 right-4">
-                <button
-                  className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-3 rounded-full hover:from-indigo-700 hover:to-purple-700 transition-all shadow-lg"
-                  onClick={() => {
-                    if (localParticipant) {
-                      const enabled = !localVideoTrack;
-                      localParticipant.setCameraEnabled(enabled);
-                    }
-                  }}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    {localVideoTrack ? (
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    ) : (
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+              {/* Centered Microphone Button */}
+              <div className="flex flex-col items-center justify-center w-full">
+                <div className="flex items-center justify-center mb-3">
+                  <motion.button
+                    onClick={toggleMicrophone}
+                    disabled={isAgentSpeaking}
+                    whileTap={{ scale: 0.95 }}
+                    className={`relative p-4 rounded-full transition-colors duration-300 ${isAgentSpeaking ? 'opacity-50 cursor-not-allowed' : ''} ${
+                      isActive
+                        ? 'bg-red-600 text-white hover:bg-red-700 shadow-lg'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    }`}
+                    title={isAgentSpeaking ? 'Agent is speaking' : (isActive ? 'Click to Mute' : 'Click to Unmute')}
+                  >
+                    <motion.div
+                      animate={{ scale: isActive ? 1.1 : 1 }}
+                      transition={{ duration: 0.3, ease: "easeInOut" }}
+                    >
+                      {isActive ? <Mic className="h-6 w-6" /> : <MicOff className="h-6 w-6" />}
+                    </motion.div>
+                    
+                    {/* User speaking indicator */}
+                    {isSpeaking && (
+                      <motion.span 
+                        className="absolute -top-1 -right-1 flex h-3 w-3"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ duration: 0.3 }}
+                      >
+                        <motion.span 
+                          className="absolute inline-flex h-full w-full rounded-full bg-green-400"
+                          animate={{ scale: [1, 1.5, 1] }}
+                          transition={{ duration: 1.5, repeat: Infinity, repeatType: "loop" }}
+                        />
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                      </motion.span>
                     )}
-                  </svg>
-                </button>
-              </div>
-            </PlaygroundTile>
-            
-            {config.settings.outputs.audio && (
-              <PlaygroundTile className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl overflow-hidden flex items-center justify-center aspect-video">
-                <div className="text-center p-4">
-                  <div className="mb-4">
-                    <BarVisualizer
-                      className="h-32 w-32 mx-auto"
-                      color="#6366f1"
-                    />
-                  </div>
-                  <h3 className="text-white font-medium">AI Coach</h3>
-                  <p className="text-white/60 text-sm">Listening...</p>
+                    
+                    {/* Agent speaking indicator */}
+                    {isAgentSpeaking && (
+                      <motion.span 
+                        className="absolute -bottom-1 -left-1 flex h-3 w-3"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ duration: 0.3 }}
+                      >
+                        <motion.span 
+                          className="absolute inline-flex h-full w-full rounded-full bg-blue-400"
+                          animate={{ scale: [1, 1.5, 1] }}
+                          transition={{ duration: 1.5, repeat: Infinity, repeatType: "loop" }}
+                        />
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+                      </motion.span>
+                    )}
+                  </motion.button>
                 </div>
-              </PlaygroundTile>
-            )}
-          </div>
-
-          <PlaygroundTabbedTile
-            className="flex-1 bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl overflow-hidden"
-            tabs={[
-              {
-                title: "Chat",
-                content: (
-                  <div className="p-4">
-                    <div className="relative bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl overflow-hidden p-6 text-center">
-                      <div className="bg-indigo-600/80 text-white text-xs font-medium px-3 py-1 rounded-full inline-block mb-3">
-                        COMING SOON
-                      </div>
-                      <h3 className="text-xl font-bold text-white mb-2">AI Coaching Chat</h3>
-                      <p className="text-white/70 mb-4">
-                        Have meaningful conversations with your AI mental health coach.
-                      </p>
-                      <div className="flex justify-center">
-                        <button className="px-4 py-2 bg-white/10 text-white rounded-lg opacity-50 cursor-not-allowed">
-                          Start Conversation
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ),
-              },
-              {
-                title: "Transcript",
-                content: (
-                  <div className="h-full p-4">
-                    {transcripts.length > 0 ? (
-                      <div className="space-y-4">
-                        {transcripts.map((message, index) => (
-                          <div 
-                            key={index} 
-                            className={`p-3 rounded-lg ${
-                              message.isSelf 
-                                ? "bg-indigo-600/20 border border-indigo-500/30 ml-8" 
-                                : "bg-white/10 border border-white/10 mr-8"
-                            }`}
-                          >
-                            <div className="flex items-center mb-1">
-                              <span className="text-sm font-medium text-white/80">
-                                {message.name}
-                              </span>
-                              <span className="ml-2 text-xs text-white/40">
-                                {new Date(message.timestamp).toLocaleTimeString()}
-                              </span>
-                            </div>
-                            <p className="text-white">{message.message}</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center justify-center h-full p-4 text-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-white/30 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                        </svg>
-                        <p className="text-white/50">No transcripts available yet</p>
-                        <p className="text-white/30 text-sm mt-2">
-                          Your conversation transcripts will appear here
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ),
-              },
-              {
-                title: "Settings",
-                content: (
-                  <div className="p-4 space-y-4">
-                    <ConfigurationPanelItem title="Microphone Mode">
-                      <div className="flex items-center space-x-4">
-                        <button
-                          onClick={() => setIsPushToTalk(false)}
-                          className={`px-3 py-2 rounded-lg text-sm ${!isPushToTalk 
-                            ? "bg-indigo-600 text-white" 
-                            : "bg-white/10 text-white/70 hover:bg-white/20"}`}
-                        >
-                          Always On
-                        </button>
-                        <button
-                          onClick={() => setIsPushToTalk(true)}
-                          className={`px-3 py-2 rounded-lg text-sm ${isPushToTalk 
-                            ? "bg-indigo-600 text-white" 
-                            : "bg-white/10 text-white/70 hover:bg-white/20"}`}
-                        >
-                          Push to Talk
-                        </button>
-                      </div>
-                    </ConfigurationPanelItem>
-                    
-                    <ConfigurationPanelItem title="Theme">
-                      <div className="flex flex-wrap gap-2">
-                        {themeColors.map((color, index) => (
-                          <button
-                            key={index}
-                            className={`w-8 h-8 rounded-full ${color === themeColors[0] ? "ring-2 ring-white ring-offset-2 ring-offset-gray-800" : ""}`}
-                            style={{ backgroundColor: color }}
-                          />
-                        ))}
-                      </div>
-                    </ConfigurationPanelItem>
-                    
-                    <div className="mt-4 pt-4 border-t border-white/10">
-                      <p className="text-white/50 text-sm text-center">
-                        KnoMind v2.0.0 Beta
-                      </p>
-                    </div>
-                  </div>
-                ),
-              },
-            ]}
-          />
+                
+                {/* Speaking Indicator */}
+                <div className="text-sm text-gray-400">
+                  <motion.div
+                    initial={{ opacity: 0.7 }}
+                    animate={{
+                      opacity: isSpeaking ? 1 : 0.7
+                    }}
+                    transition={{ duration: 0.3 }}
+                    className="flex items-center gap-2"
+                  >
+                    <motion.div 
+                      className={`h-2 w-2 rounded-full ${isSpeaking ? 'bg-green-500' : 'bg-gray-400'}`}
+                      animate={isSpeaking ? { scale: [1, 1.2, 1] } : { scale: 1 }}
+                      transition={isSpeaking ? { duration: 1.5, repeat: Infinity } : { duration: 0.3 }}
+                    />
+                    {isActive ? 'Microphone on' : 'Microphone off'}
+                  </motion.div>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {/* Permission error message */}
+          {permissionError && (
+            <div className="mt-2 text-red-400 text-xs text-center">
+              {permissionError}
+            </div>
+          )}
         </div>
       </div>
     </div>

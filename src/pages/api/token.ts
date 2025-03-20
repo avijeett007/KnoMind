@@ -50,8 +50,19 @@ export default async function handleToken(
       canSubscribe: true,
     };
 
-    // Ensure metadata is properly stringified
-    const metadataString = JSON.stringify(metadata);
+    // Ensure metadata is properly stringified and logged
+    console.log('Received metadata in token API:', metadata);
+    
+    // Make sure metadata is a valid object before stringifying
+    const metadataObj = typeof metadata === 'object' && metadata !== null ? metadata : {};
+    
+    // Add additional debugging info
+    if (Object.keys(metadataObj).length === 0) {
+      console.warn('Warning: Empty metadata object received in token API');
+    }
+    
+    const metadataString = JSON.stringify(metadataObj);
+    console.log('Stringified metadata:', metadataString);
 
     // Create token with metadata
     const token = await createToken({ 

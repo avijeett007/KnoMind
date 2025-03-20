@@ -50,23 +50,32 @@ export const ConnectionProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           }
           url = process.env.NEXT_PUBLIC_LIVEKIT_URL;
           
-          // Use POST request with metadata if provided
-          const options: RequestInit = metadata ? {
+          // Always use POST request with metadata
+          console.log('Connecting with metadata:', metadata);
+          
+          // Ensure metadata is properly formatted with name and goal
+          const metadataToSend = metadata || {};
+          console.log('Formatted metadata for token request:', metadataToSend);
+          
+          const options: RequestInit = {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-              metadata
+              metadata: metadataToSend
             })
-          } : {};
+          };
           
+          console.log('Sending token request with options:', options);
           const response = await fetch("/api/token", options);
           if (!response.ok) {
             throw new Error("Failed to fetch token");
           }
-          const { accessToken } = await response.json();
-          token = accessToken;
+          const data = await response.json();
+          console.log('Token response:', data);
+          token = data.accessToken;
+          console.log('Using token:', token);
         } else {
           token = config.settings.token;
           url = config.settings.ws_url;
