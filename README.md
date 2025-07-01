@@ -1,6 +1,7 @@
 # KnoMind - AI Mental Health Coach
 
 Welcome to KnoMind! An innovative application that provides personalized mental health support through AI-powered conversations, helping you navigate life's challenges with confidence.
+I have now added gemini cli review using kno-gemini-cli.
 
 ## Overview
 
